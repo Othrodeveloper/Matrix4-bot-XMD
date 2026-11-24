@@ -1,4 +1,4 @@
-`use strict';
+'use strict';
 // ╔══════════════════════════════════════════════════════════════╗
 // ║         MATRIX4-XMD BOT — main.js (CommonJS) v4.1.1             ║
 // ║   Session Permanente · Pair Code / QR · Baileys v7 · Render ║
