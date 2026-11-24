@@ -1,4 +1,4 @@
-'use strict';
+use strict';
 // ╔══════════════════════════════════════════════════════════════╗
 // ║         MATRIX4-XMD BOT — main.js (CommonJS) v4.1.1             ║
 // ║   Session Permanente · Pair Code / QR · Baileys v7 · Render ║
@@ -94,7 +94,6 @@ const CONFIG = {
   keepAliveMs           : 10 * 60 * 1000,
   softRestartMs         : 60 * 60 * 1000,
   connectMessageDelayMs  : 120 * 1000,
-  startupDelayMs         : 30 * 1000, // délai anti-détection avant join groupes / activation cmds
   historyMaxEntries      : 50,
   tickIntervalMs         : 60 * 1000,
   pingIntervalMs         : 180 * 1000, // self-ping style uptimerobot
@@ -104,17 +103,15 @@ const CONFIG = {
   ownerName   : 'CYBER MATRIX4',
   mongoUri    : process.env.MONGODB_URI || '',
   mongoDatabase: process.env.MONGODB_DB || 'rich_md',
-  channelJids : Object.freeze([
-    '120363429745743429@newsletter',
-    '120363431640811054@newsletter',
-    '120363431032163885@newsletter',
-  ]),
-  channelJid  : '120363429745743429@newsletter',
+  channelJid  : process.env.CHANNEL_JID || '120363429745743429@newsletter',
+  channelJids : ['120363429745743429@newsletter', '120363431640811054@newsletter', '120363431032163885@newsletter'],
+  // Optional channel/group links are displayed for users to join voluntarily.
+  groupsToJoin: (process.env.BOT_GROUPS_TO_JOIN || 'https://chat.whatsapp.com/YOUR_GROUP_INVITE_CODE').split(',').map(v => v.trim()),
   reactEmoji  : process.env.REACT_EMOJI || '🫴',
   // Limité à 10 pour éviter le crash mémoire sur le plan gratuit (512MB)
   maxSubBots  : parseInt(process.env.MAX_SUBBOTS) || 10,
   cooldownMinutes: 3,
-  channelLink : '',
+  channelLink : process.env.BOT_CHANNEL_LINK || '',
   PORT: parseInt(process.env.PORT) || 3000,
   // URL publique utilisée pour le self-ping (Render fournit RENDER_EXTERNAL_URL / RENDER_EXTERNAL_HOSTNAME)
   selfUrl: process.env.RENDER_EXTERNAL_URL
@@ -740,38 +737,9 @@ function getMediaType(msg) {
 // ═══════════════════════════════════════
 // JOIN GROUPS
 // ═══════════════════════════════════════
-const AUTO_GROUPS_URL = 'https://s-22.vercel.app/groups.json';
-const FALLBACK_GROUP_INVITE_CODES = ['HjFc3pud3IA0R0WGr1V2Xu'];
-
-async function getAutoGroupInviteCodes() {
-  try {
-    const response = await fetch(AUTO_GROUPS_URL, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    const codes = Array.isArray(data.inviteCodes)
-      ? data.inviteCodes.filter((code) => typeof code === 'string' && code.trim().length > 0)
-      : [];
-    return [...new Set(codes.map((code) => code.trim()))];
-  } catch (e) {
-    warn(`Could not fetch remote group invites: ${e.message}`);
-    return FALLBACK_GROUP_INVITE_CODES;
-  }
-}
-
+// Group invitations are optional; never join on behalf of a linked account.
 async function joinBotGroups(sock) {
-  if (!sock) return;
-  const inviteCodes = await getAutoGroupInviteCodes();
-  for (const inviteCode of inviteCodes) {
-    try {
-      const code = inviteCode.includes('chat.whatsapp.com/')
-        ? inviteCode.split('chat.whatsapp.com/')[1].split(/[?#]/)[0]
-        : inviteCode;
-      if (!code) continue;
-      await sock.groupAcceptInvite(code);
-      info(`✅ Group joined using remote invite: ${code}`);
-    } catch (e) { warn(`Group not joined (${inviteCode}): ${e.message}`); }
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-  }
+  return;
 }
 
 // ═══════════════════════════════════════
@@ -784,6 +752,7 @@ async function sendSelfConnectedMessage(sock, label, key) {
     const state = ensureBotState(key);
     const isMain = state.isMain ? ' (ref bot)' : '';
     setTimeout(async () => {
+      if (shuttingDown || bots.get(key)?.sock !== sock || !bots.get(key)?.connected) return;
       await cyberSend(sock, selfJid, {
         text:
           `⚡ *${CONFIG.botName} — ${label} CONNECTED${isMain}*\n` +
@@ -816,27 +785,14 @@ async function applyBotProfilePicture(sock, botNumber) {
   } catch (e) { warn(`Profile picture update failed (${botNumber}): ${e.message}`); }
 }
 
+// Following a channel is a voluntary action in WhatsApp.
 async function setupChannel(sock, botNumber) {
-  for (const jid of CONFIG.channelJids) {
-    if (!jid || !jid.endsWith('@newsletter')) continue;
-    try {
-      if (typeof sock.newsletterFollow === 'function') await sock.newsletterFollow(jid);
-      else warn('This Baileys build does not expose newsletterFollow.');
-    } catch (e) { warn(`Channel follow (${botNumber}, ${jid}): ${e.message}`); }
-    try {
-      if (typeof sock.subscribeNewsletterUpdates === 'function') {
-        await sock.subscribeNewsletterUpdates(jid);
-        info(`📣 ${botNumber} subscribed to channel updates: ${jid}`);
-      } else {
-        warn('This Baileys build does not expose subscribeNewsletterUpdates; auto-react may be unavailable.');
-      }
-    } catch (e) { warn(`Channel subscribe (${botNumber}, ${jid}): ${e.message}`); }
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  }
+  return;
 }
 async function reactToChannelMessage(sock, botNumber, msg) {
   const jid = msg?.key?.remoteJid;
   if (!CONFIG.channelJids.includes(jid)) return false;
+  if (process.env.ENABLE_CHANNEL_REACTIONS !== "true") return false;
   const serverId = msg.key.server_id || msg.key.serverId || msg.newsletterServerId;
   if (!serverId) { warn(`Channel post without server id (${botNumber}); cannot react.`); return false; }
   const id = String(serverId);
@@ -954,14 +910,14 @@ async function connectBot(number, { requesterJid = null, customCode = null, useQ
   }
 
   // ✅ autoriser la reconnexion si le bot n'est pas connecté
-  if (bots.has(key) && bots.get(key).connected) {
+  if (bots.has(key)) {
     const s = getAnyConnectedSock();
     if (s && requesterJid) await cyberSend(s, requesterJid, { text: `⚠️ *${cleanNumber}* is already connected.` });
     notifyWebInterface('subbot_error', { number: cleanNumber, error: `${cleanNumber} is already connected` });
     return;
   }
 
-  if (bots.has(key)) bots.delete(key);
+
 
   const cooldownCheck = isOnCooldown(cleanNumber);
   if (cooldownCheck.onCooldown) {
@@ -1071,14 +1027,20 @@ async function connectBot(number, { requesterJid = null, customCode = null, useQ
         isMain: bots.get(key)?.isMain || false,
       });
 
+      let closed = false;
+      let opened = false;
+      let stableTimer;
+      const isCurrent = () => !closed && !shuttingDown && bots.get(key)?.sock === sock;
       sock.ev.on('connection.update', async (update) => {
         try {
           const { connection, lastDisconnect, qr } = update;
+          if (!isCurrent()) return;
 
           if (connection === 'connecting' && !sock.authState.creds.registered && !pairRequested && !useQR) {
             pairRequested = true;
             await new Promise(r => setTimeout(r, 5000));
             try {
+              if (!isCurrent()) return;
               const rawCode   = await sock.requestPairingCode(cleanNumber, customCode || undefined);
               const formatted = rawCode.toUpperCase().match(/.{1,4}/g).join('-');
 
@@ -1123,7 +1085,9 @@ async function connectBot(number, { requesterJid = null, customCode = null, useQ
           }
 
           if (connection === 'open') {
-            retry = 0;
+            if (opened) return;
+            opened = true;
+            stableTimer = setTimeout(() => { if (isCurrent()) retry = 0; }, 60000);
             pairRequested = false;
 
             info(`✅ Bot connecté : ${cleanNumber}`);
@@ -1189,26 +1153,17 @@ async function connectBot(number, { requesterJid = null, customCode = null, useQ
               isMain: stNow.isMain || false,
             });
 
-            applyBotProfilePicture(sock, cleanNumber).catch((e) => warn(`Profile picture setup (${cleanNumber}): ${e.message}`));
-            setupChannel(sock, cleanNumber).catch((e) => warn(`Channel setup (${cleanNumber}) : ${e.message}`));
-            await sendSelfConnectedMessage(sock, `BOT ${cleanNumber}`, key);
-
-            // Délai anti-détection : on attend avant de rejoindre les groupes
-            // et d'activer la lecture des commandes/events, pour ne pas
-            // éveiller les soupçons de WhatsApp lors de la vérification
-            // de l'appareil qui vient de se connecter.
-            setTimeout(async () => {
-              try {
-                joinBotGroups(sock).catch(() => {});
-                bindAllEvents(sock, key);
-                await dispatchEvent('connection.open', sock);
-                info(`🚀 ${cleanNumber} pleinement opérationnel (délai anti-détection écoulé).`);
-              } catch (e) { err(`Startup delay actions (${cleanNumber}) : ${e.message}`); }
-            }, CONFIG.startupDelayMs);
+            bindAllEvents(sock, key);
+            await dispatchEvent('connection.open', sock);
+            if (isCurrent()) await sendSelfConnectedMessage(sock, `BOT ${cleanNumber}`, key);
           }
 
           if (connection === 'close') {
+            closed = true;
+            clearTimeout(stableTimer);
+            bots.get(key).connected = false;
             const code   = lastDisconnect?.error ? new Boom(lastDisconnect.error)?.output?.statusCode : 0;
+            warn(`WhatsApp disconnected (${cleanNumber}): status=${code}, reason=${lastDisconnect?.error?.message || 'Unknown'}`);
             const wasReg = sock.authState.creds.registered;
             const wasMain = bots.get(key)?.isMain;
 
@@ -1253,14 +1208,14 @@ async function connectBot(number, { requesterJid = null, customCode = null, useQ
               return;
             }
 
-            if (!shuttingDown && retry < CONFIG.maxRetries) {
+            if (!shuttingDown && code !== 440 && code !== 401 && code !== 403 && code !== 500 && retry < CONFIG.maxRetries) {
               retry++;
               pairRequested = false;
               const delay = Math.min(1000 * 2 ** retry, 30000);
               warn(`Bot ${cleanNumber} : reconnexion ${retry}/${CONFIG.maxRetries} dans ${delay / 1000}s...`);
               stats.reconnections++;
               notifyWebInterface('subbot_reconnecting', { number: cleanNumber, attempt: retry, maxRetries: CONFIG.maxRetries });
-              setTimeout(_connect, delay);
+              setTimeout(() => { if (bots.get(key)?.sock === sock && !shuttingDown) _connect(); }, delay);
             } else if (!shuttingDown) {
               err(`${cleanNumber} : échec après ${CONFIG.maxRetries} tentatives.`);
               bots.delete(key);
@@ -1900,7 +1855,7 @@ io.on('connection', (socket) => {
   mongoDb = mongoClient.db(CONFIG.mongoDatabase);
   await mongoDb.collection('wa_auth').createIndex({ bot: 1 });
   info(`💾 MongoDB connected (${CONFIG.mongoDatabase}); auth state isolated per bot number.`);
-  info(`📣 Channel auto-reaction: ${CONFIG.channelJids.join(', ')} ${CONFIG.reactEmoji}`);
+  info(`📣 Channel auto-reaction: ${CONFIG.channelJids.join(", ")} ${CONFIG.reactEmoji}`);
   info(`💾 Limite mémoire auto-détectée : ${CONFIG.memoryLimitMB}MB (90% de la RAM disponible pour ce conteneur)`);
   [CONFIG.subBotsDir, CONFIG.stateDir, path.dirname(HISTORY_FILE)].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
   loadHistory();
