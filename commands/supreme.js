@@ -1,0 +1,51 @@
+// ./commands/supreme.js
+const axios = require('axios');
+
+const STYLE = {
+    forwardingScore: 350,
+    isForwarded: true,
+    forwardedNewsletterMessageInfo: {
+        newsletterJid: (process.env.CHANNEL_JID || '120363429745743429@newsletter'),
+        newsletterName: (process.env.BOT_NAME || 'MATRIX4-XMD'),
+        serverMessageId: 202,
+    },
+};
+
+module.exports = {
+    name: 'supreme',
+    aliases: ['supremelogo', 'sup'],
+    category: 'fun',
+
+    async execute({ sock, msg, args, jid }) {
+        const query = args.join(' ');
+        if (!query || query.trim().length < 1) {
+            return sock.sendMessage(jid, {
+                text: '👑 *Supreme Logo Generator*\n\n⚡ *Usage:* .supreme <text>\n\n✨ *Examples:*\n.supreme MATRIX4-XMD\n.supreme Bot',
+                contextInfo: STYLE,
+            }, { quoted: msg });
+        }
+
+        try {
+            await sock.sendMessage(jid, { react: { text: '👑', key: msg.key } });
+            
+            const url = `https://api.popcat.xyz/v2/supreme?text=${encodeURIComponent(query)}`;
+            const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
+            const buffer = Buffer.from(response.data);
+
+            await sock.sendMessage(jid, {
+                image: buffer,
+                caption: `👑 *Supreme Logo*\n\n💬 ${query}\n\n⚡ _MATRIX4-XMD AI_`,
+                contextInfo: STYLE,
+            }, { quoted: msg });
+
+            await sock.sendMessage(jid, { react: { text: '✅', key: msg.key } });
+        } catch (err) {
+            console.log(`❌ Supreme error: ${err.message}`);
+            await sock.sendMessage(jid, { react: { text: '❌', key: msg.key } });
+            return sock.sendMessage(jid, {
+                text: '❌ *Failed to generate Supreme logo.*\n\nTry again later.',
+                contextInfo: STYLE,
+            }, { quoted: msg });
+        }
+    }
+};
